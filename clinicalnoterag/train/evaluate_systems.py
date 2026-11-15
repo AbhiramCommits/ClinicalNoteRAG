@@ -77,19 +77,23 @@ def _align(a: EvalResult, b: EvalResult, metric: str) -> tuple[np.ndarray, np.nd
     values_a: list[float] = []
     values_b: list[float] = []
     for item_id in common:
-        va = by_id_a[item_id].get(metric)
-        vb = by_id_b[item_id].get(metric)
-        if va is None or vb is None:
-            continue
+        record_a = by_id_a[item_id]
+        record_b = by_id_b[item_id]
         if metric == "hallucination":
-            values_a.append(1.0 if va else 0.0)
-            values_b.append(1.0 if vb else 0.0)
-        elif metric == "false_answer":
-            if by_id_a[item_id]["answerable"]:
+            if not record_a["answerable"]:
                 continue
-            values_a.append(1.0 if not by_id_a[item_id]["abstained"] else 0.0)
-            values_b.append(1.0 if not by_id_b[item_id]["abstained"] else 0.0)
+            values_a.append(1.0 if record_a["unsupported_claim"] else 0.0)
+            values_b.append(1.0 if record_b["unsupported_claim"] else 0.0)
+        elif metric == "false_answer":
+            if record_a["answerable"]:
+                continue
+            values_a.append(1.0 if not record_a["abstained"] else 0.0)
+            values_b.append(1.0 if not record_b["abstained"] else 0.0)
         else:
+            va = record_a.get(metric)
+            vb = record_b.get(metric)
+            if va is None or vb is None:
+                continue
             values_a.append(float(va))
             values_b.append(float(vb))
     return np.asarray(values_a), np.asarray(values_b)

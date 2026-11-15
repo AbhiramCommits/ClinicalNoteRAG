@@ -4,7 +4,7 @@ PATIENTS ?= 300
 PORT ?= 8000
 CORPUS ?= data/corpus
 
-.PHONY: setup gen sample deid-audit ingest refresh serve eval train compare smoke test lint fmt reproduce docker-up clean
+.PHONY: setup gen sample deid-audit ingest refresh serve eval train compare api-smoke deploy-dry-run smoke test lint fmt reproduce docker-up clean
 
 setup:
 	python3.11 -m venv .venv
@@ -39,6 +39,13 @@ train:
 compare:
 	$(PYTHON) -m clinicalnoterag compare-systems --k 5
 
+api-smoke:
+	LLM_BACKEND=extractive VECTOR_BACKEND=faiss $(PYTHON) scripts/smoke_queries.py --start-server --port 8765 --reset-telemetry
+
+deploy-dry-run:
+	$(PYTHON) scripts/deploy/sagemaker_deploy.py --dry-run
+	$(PYTHON) scripts/deploy/azureml_deploy.py --dry-run
+
 smoke:
 	KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1 EMBEDDING_BACKEND=hashing LLM_BACKEND=extractive HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(PYTHON) scripts/smoke_pipeline.py
 
@@ -60,7 +67,7 @@ reproduce:
 		.venv/bin/python -m pip install --upgrade pip setuptools wheel; \
 		.venv/bin/python -m pip install -e ".[dev,ml]"; \
 	fi
-	$(MAKE) gen deid-audit ingest refresh eval train compare smoke test PYTHON=.venv/bin/python
+	$(MAKE) gen deid-audit ingest refresh eval api-smoke deploy-dry-run train smoke test PYTHON=.venv/bin/python
 
 docker-up:
 	docker compose up -d db
