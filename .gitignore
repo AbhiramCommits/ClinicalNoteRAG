@@ -23,6 +23,7 @@ htmlcov/
 
 # Generated data / artifacts (tiny committed sample lives in data/sample)
 data/corpus/
+data/smoke_corpus/
 data/benchmark/
 data/sft/
 data/raw/

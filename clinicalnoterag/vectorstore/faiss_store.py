@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -10,6 +11,9 @@ from typing import Any
 
 import faiss
 import numpy as np
+
+with contextlib.suppress(Exception):  # avoid OpenMP conflicts with PyTorch
+    faiss.omp_set_num_threads(1)
 
 from clinicalnoterag.vectorstore.base import (
     Record,

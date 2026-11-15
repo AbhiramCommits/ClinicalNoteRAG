@@ -153,7 +153,7 @@ def sql_filter_clause(filters: dict[str, Any]) -> tuple[str, list[Any]]:
             params.append(str(value))
         elif key == "denied":
             clauses.append("denied = %s")
-            params.append(1 if value else 0)
+            params.append(bool(value))
         else:
             column = _SQL_COLUMNS[key]
             clauses.append(f"{column} = %s")

@@ -162,6 +162,7 @@ class ClinicalReranker:
         import torch
         from torch import nn
 
+        torch.set_num_threads(1)
         set_global_seed(seed)
         self.feature_mean = train_features.mean(axis=0)
         self.feature_std = train_features.std(axis=0)
@@ -231,6 +232,7 @@ class ClinicalReranker:
         """Return a relevance probability for each candidate chunk."""
         if not chunks:
             return np.zeros(0, dtype=np.float32)
+        self._torch.set_num_threads(1)
         features = self._standardize(extract_features(question, chunks))
         self._model.eval()
         with self._torch.no_grad():

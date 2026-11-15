@@ -110,11 +110,13 @@ def scan_corpus(
             leaked = per_leaked.setdefault(entity_type, 0)
             for value in values:
                 checked += 1
-                if value and value in scrubbed:
+                is_leaked = bool(value) and value in scrubbed
+                if is_leaked:
                     leaked += 1
                     leak_record.leaked_values.setdefault(entity_type, []).append(value)
                 leak_record.checked[entity_type] = leak_record.checked.get(entity_type, 0) + 1
-                leak_record.leaked[entity_type] = leak_record.leaked.get(entity_type, 0)
+                if is_leaked:
+                    leak_record.leaked[entity_type] = leak_record.leaked.get(entity_type, 0) + 1
             per_checked[entity_type] = checked
             per_leaked[entity_type] = leaked
         if leak_record.any_leak:
