@@ -346,6 +346,7 @@ def evaluate(
             "embedding_backend": answerer.retriever.embedder.name,
             "generator_backend": answerer.generator.name,
             "store_backend": answerer.retriever.store.name,
+            "reranker_backend": getattr(answerer, "reranker_name", None),
             "system_name": system_name,
         },
         metrics=metrics,

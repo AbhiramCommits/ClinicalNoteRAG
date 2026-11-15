@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -229,6 +230,90 @@ def eval_command(
                     "store": result.config["store_backend"],
                 },
                 "ablations": len(ablation_rows),
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("train")
+def train_command(
+    component: str = typer.Option("all", help="all | lora | reranker"),
+    max_steps: int = typer.Option(12, min=1, max=200),
+    seed: int = typer.Option(42),
+) -> None:
+    """Build SFT pairs, train the LoRA adapter and/or the fallback reranker."""
+    from clinicalnoterag.train.dataset import build_sft_dataset
+    from clinicalnoterag.train.fallback_reranker import train_reranker
+    from clinicalnoterag.train.finetune_lora import train_lora
+
+    settings = get_settings()
+    set_global_seed(seed)
+    embedder, _ = load_embedding_state(settings)
+    store = get_store(settings, embedder.dim, fresh=False)
+    summary: dict[str, Any] = {}
+    try:
+        retriever = HybridRetriever(store, embedder, settings)
+        sft_path = Path("data/sft/train.jsonl")
+        if not sft_path.exists():
+            stats = build_sft_dataset(
+                "data/corpus", "data/benchmark/clinical_qa.jsonl", retriever, "data/sft", seed=seed
+            )
+            summary["sft"] = {
+                "train": stats.n_train,
+                "val": stats.n_val,
+                "test": stats.n_test,
+                "train_patients": stats.n_train_patients,
+                "val_patients": stats.n_val_patients,
+                "test_patients": stats.n_test_patients,
+            }
+        if component in {"all", "reranker"}:
+            summary["reranker"] = train_reranker(retriever, seed=seed)
+        if component in {"all", "lora"}:
+            summary["lora"] = train_lora(settings, max_steps=max_steps)
+    finally:
+        store.close()
+    typer.echo(
+        json.dumps(
+            {
+                "component": component,
+                "sft": summary.get("sft"),
+                "lora_status": summary.get("lora", {}).get("status")
+                if "lora" in summary
+                else "not_run",
+                "reranker_status": summary.get("reranker", {}).get("status")
+                if "reranker" in summary
+                else "not_run",
+                "lora_config": {
+                    key: summary.get("lora", {}).get(key)
+                    for key in ("max_steps", "lora_r", "lora_alpha", "lora_target_modules")
+                }
+                if "lora" in summary
+                else None,
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("compare-systems")
+def compare_systems_command(
+    k: int = typer.Option(5, min=1, max=50),
+    seed: int = typer.Option(42),
+) -> None:
+    """Evaluate no-RAG, RAG zero-shot, tuned reranker and LoRA systems."""
+    from clinicalnoterag.train.evaluate_systems import run_system_comparison
+
+    settings = get_settings()
+    set_global_seed(seed)
+    result = run_system_comparison(settings=settings, k=k, seed=seed)
+    typer.echo(
+        json.dumps(
+            {
+                "test_items": result["n_test_items"],
+                "systems": list(result["systems"].keys()),
+                "deltas": result["deltas_rag_tuned_vs_zero_shot"],
+                "artifact": "artifacts/eval/system_comparison.md",
             },
             indent=2,
         )

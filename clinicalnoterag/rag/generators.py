@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
@@ -578,8 +579,13 @@ class ExtractiveGenerator:
 class HFLocalGenerator:
     """Small local instruct generator (Qwen2.5-0.5B-Instruct, flan-t5-base fallback)."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        adapter_path: str | Path | None = None,
+    ) -> None:
         self.settings = settings
+        self.adapter_path = str(adapter_path) if adapter_path else None
         self._model = None
         self._tokenizer = None
         self._is_seq2seq = False
@@ -600,11 +606,17 @@ class HFLocalGenerator:
                 else:
                     model = AutoModelForCausalLM.from_pretrained(model_name)
                     self._is_seq2seq = False
+                if self.adapter_path:
+                    from peft import PeftModel
+
+                    model = PeftModel.from_pretrained(model, self.adapter_path)
                 model.eval()
                 self._model = model
                 self._tokenizer = tokenizer
-                self.name = f"hf-local:{model_name}"
-                self.selection_reason = f"loaded {model_name} on CPU"
+                self.name = f"hf-local:{model_name}" + (":lora" if self.adapter_path else "")
+                self.selection_reason = f"loaded {model_name} on CPU" + (
+                    f" with adapter {self.adapter_path}" if self.adapter_path else ""
+                )
                 return
             except Exception as exc:  # noqa: BLE001 - try the configured fallback
                 last_error = exc
@@ -642,12 +654,16 @@ class HFLocalGenerator:
                 {"role": "user", "content": prompt},
             ]
             if hasattr(self._tokenizer, "apply_chat_template"):
-                inputs = self._tokenizer.apply_chat_template(
-                    messages, return_tensors="pt", add_generation_prompt=True
+                chat_prompt = self._tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
                 )
-                input_ids = inputs
+                input_ids = self._tokenizer(
+                    chat_prompt, return_tensors="pt", truncation=True, max_length=2048
+                ).input_ids
             else:
-                input_ids = self._tokenizer(prompt, return_tensors="pt").input_ids
+                input_ids = self._tokenizer(
+                    prompt, return_tensors="pt", truncation=True, max_length=2048
+                ).input_ids
             with torch.no_grad():
                 output = self._model.generate(
                     input_ids,

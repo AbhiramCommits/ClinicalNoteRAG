@@ -145,12 +145,15 @@ class ClinicalAnswerer:
         settings: Settings | None = None,
         telemetry: TelemetryRecorder | None = None,
         system_name: str = "rag-zero-shot",
+        reranker: Any | None = None,
     ) -> None:
         self.retriever = retriever
         self.settings = settings or retriever.settings
         self.generator = generator or get_generator(self.settings)
         self.telemetry = telemetry or TelemetryRecorder(self.settings.telemetry_path, enabled=False)
         self.system_name = system_name
+        self.reranker = reranker
+        self.reranker_name = getattr(reranker, "name", None)
 
     def _abstain(
         self, question: str, contexts: list[RetrievedChunk], reason: str, mode: str
@@ -191,7 +194,19 @@ class ClinicalAnswerer:
             question=question,
             filters=active_filters,
         ) as record:
-            contexts = self.retriever.retrieve(question, k=k, filters=active_filters, mode=mode)
+            requested_k = k or self.settings.retrieval_k
+            if self.reranker is not None:
+                candidates = self.retriever.retrieve(
+                    question,
+                    k=max(20, requested_k * 4),
+                    filters=active_filters,
+                    mode=mode,
+                )
+                contexts = self.reranker.rerank(question, candidates, top_k=requested_k)
+            else:
+                contexts = self.retriever.retrieve(
+                    question, k=requested_k, filters=active_filters, mode=mode
+                )
             if not contexts:
                 answer = self._abstain(question, contexts, "no_retrieval", mode)
             elif contexts[0].score < self.settings.abstention_threshold:
