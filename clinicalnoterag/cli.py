@@ -14,7 +14,10 @@ from clinicalnoterag.config import get_settings
 from clinicalnoterag.data.synthea_gen import generate_corpus
 from clinicalnoterag.deid.audit import scan_corpus
 from clinicalnoterag.deid.engine import DeidEngine
+from clinicalnoterag.embeddings.backends import get_embedding_backend
+from clinicalnoterag.pipeline.ingest import run_ingest
 from clinicalnoterag.seeds import set_global_seed
+from clinicalnoterag.vectorstore.factory import get_store
 
 app = typer.Typer(
     name="clinicalnoterag",
@@ -91,6 +94,51 @@ def gen_sample_command(
                 "documents": stats.n_documents,
                 "out_dir": stats.out_dir,
                 "manifest": stats.manifest_path,
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("ingest")
+def ingest_command(
+    corpus: Path = typer.Option(Path("data/corpus"), help="Corpus directory."),
+    store_name: str = typer.Option(
+        "faiss", "--store", help="Vector store backend: faiss | pgvector."
+    ),
+    out: Path = typer.Option(Path("artifacts/ingest_report.json"), help="Report path."),
+    fresh: bool = typer.Option(True, help="Rebuild the store from scratch."),
+) -> None:
+    """De-identify, chunk, embed, and upsert the synthetic corpus."""
+    settings = get_settings()
+    set_global_seed(settings.seed)
+    manifest_path = corpus / "corpus_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    embedder = get_embedding_backend(settings)
+    deid = DeidEngine(backend="auto", known_names=list(manifest.get("known_names", [])))
+    store = get_store(settings, embedder.dim, store_name=store_name, fresh=fresh)
+    try:
+        report = run_ingest(
+            corpus,
+            store,
+            deid,
+            embedder,
+            settings,
+            out_path=out,
+        )
+    finally:
+        store.close()
+    typer.echo(
+        json.dumps(
+            {
+                "documents": report["documents"],
+                "chunks": report["chunks"],
+                "store": report["store_backend"],
+                "embedding_backend": report["embedding_backend"],
+                "deid_backend": report["deid_backend"],
+                "chunks_per_sec": report["chunks_per_sec"],
+                "total_wall_sec": report["total_wall_sec"],
+                "artifact": str(out),
             },
             indent=2,
         )

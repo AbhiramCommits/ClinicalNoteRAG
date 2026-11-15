@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     llm_primary_model: str = "Qwen/Qwen2.5-0.5B-Instruct"
     llm_fallback_model: str = "google/flan-t5-base"
     vector_backend: VectorBackendName = "faiss"
-    postgres_dsn: str = "postgresql://postgres:postgres@localhost:5432/clinicalnoterag"
+    postgres_dsn: str = "postgresql://postgres:postgres@localhost:5433/clinicalnoterag"
 
     # --- retrieval -------------------------------------------------------
     chunk_target_tokens: int = Field(default=256, ge=32)
