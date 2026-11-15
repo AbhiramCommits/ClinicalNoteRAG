@@ -14,9 +14,15 @@ from clinicalnoterag.config import get_settings
 from clinicalnoterag.data.synthea_gen import generate_corpus
 from clinicalnoterag.deid.audit import scan_corpus
 from clinicalnoterag.deid.engine import DeidEngine
-from clinicalnoterag.embeddings.backends import get_embedding_backend
+from clinicalnoterag.embeddings.backends import get_embedding_backend, load_embedding_state
+from clinicalnoterag.eval.benchmark import build_benchmark, load_benchmark
+from clinicalnoterag.eval.runner import evaluate, run_ablations, write_leaderboard
 from clinicalnoterag.pipeline.ingest import run_ingest
+from clinicalnoterag.rag.answerer import ClinicalAnswerer
+from clinicalnoterag.rag.generators import get_generator
+from clinicalnoterag.rag.retriever import HybridRetriever
 from clinicalnoterag.seeds import set_global_seed
+from clinicalnoterag.telemetry import TelemetryRecorder
 from clinicalnoterag.vectorstore.factory import get_store
 
 app = typer.Typer(
@@ -139,6 +145,90 @@ def ingest_command(
                 "chunks_per_sec": report["chunks_per_sec"],
                 "total_wall_sec": report["total_wall_sec"],
                 "artifact": str(out),
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("eval")
+def eval_command(
+    system: str = typer.Option("rag-baseline", help="System name for the artifact."),
+    k: int = typer.Option(5, min=1, max=50),
+    mode: str = typer.Option("hybrid", help="hybrid | dense | bm25"),
+    benchmark: Path = typer.Option(
+        Path("data/benchmark/clinical_qa.jsonl"), help="Benchmark JSONL path."
+    ),
+    corpus: Path = typer.Option(Path("data/corpus"), help="Corpus directory."),
+    ablations: bool = typer.Option(True, help="Run the k x retrieval-mode ablation sweep."),
+    resamples: int = typer.Option(10000, min=100, help="Bootstrap resamples."),
+    seed: int = typer.Option(42),
+) -> None:
+    """Evaluate the RAG system on the labeled clinical benchmark.
+
+    Writes ``artifacts/eval/<system>.json``, ``leaderboard.md/csv`` and, by
+    default, ``artifacts/eval/ablations.csv``.
+    """
+    settings = get_settings()
+    set_global_seed(seed)
+    if not benchmark.exists():
+        typer.echo(f"benchmark not found; building it at {benchmark}")
+        build_benchmark(corpus, benchmark, seed=seed)
+    items = load_benchmark(benchmark)
+    embedder, _ = load_embedding_state(settings)
+    store = get_store(settings, embedder.dim, fresh=False)
+    try:
+        retriever = HybridRetriever(store, embedder, settings)
+        generator = get_generator(settings)
+        answerer = ClinicalAnswerer(
+            retriever,
+            generator=generator,
+            settings=settings,
+            telemetry=TelemetryRecorder(settings.telemetry_path, enabled=False),
+            system_name=system,
+        )
+        result = evaluate(
+            system,
+            answerer,
+            items,
+            k=k,
+            mode=mode,
+            seed=seed,
+            n_resamples=resamples,
+            eval_dir=settings.artifact_dir / "eval",
+        )
+        write_leaderboard([result], settings.artifact_dir / "eval")
+        ablation_rows = []
+        if ablations:
+            ablation_rows = run_ablations(
+                answerer,
+                items,
+                seed=seed,
+                n_resamples=resamples,
+                out_path=settings.artifact_dir / "eval" / "ablations.csv",
+            )
+    finally:
+        store.close()
+    typer.echo(
+        json.dumps(
+            {
+                "system": system,
+                "items": result.metrics["n_items"],
+                "recall_at_k": result.metrics["recall_at_k"],
+                "mrr": result.metrics["mrr"],
+                "exact_match": result.metrics["exact_match"],
+                "token_f1": result.metrics["token_f1"],
+                "hallucination_rate": result.metrics["hallucination_rate"],
+                "false_answer_rate": result.metrics["false_answer_rate"],
+                "abstention_precision": result.metrics["abstention_precision"],
+                "abstention_recall": result.metrics["abstention_recall"],
+                "code_f1_micro": result.metrics["code"]["micro_f1"],
+                "backends": {
+                    "embedding": result.config["embedding_backend"],
+                    "generator": result.config["generator_backend"],
+                    "store": result.config["store_backend"],
+                },
+                "ablations": len(ablation_rows),
             },
             indent=2,
         )

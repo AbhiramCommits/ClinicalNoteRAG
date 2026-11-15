@@ -100,12 +100,15 @@ class ExtractiveGenerator:
     def _facts(
         contexts: list[RetrievedChunk], resource_type: str
     ) -> list[tuple[int, RetrievedChunk]]:
-        return [
+        facts = [
             (index, chunk)
             for index, chunk in enumerate(contexts, start=1)
             if chunk.metadata.get("doc_type") == "fhir_fact"
             and chunk.metadata.get("resource_type") == resource_type
         ]
+        return sorted(
+            facts, key=lambda item: (str(item[1].metadata.get("code") or ""), item[1].chunk_id)
+        )
 
     @staticmethod
     def _claim(
@@ -133,7 +136,9 @@ class ExtractiveGenerator:
 
     @staticmethod
     def _parse_denial_reason(chunk: RetrievedChunk) -> str:
-        match = re.search(r"Denial reason code: (?:CO|PR|OA)-\d+ \(([^)]+)\)", chunk.text)
+        match = re.search(
+            r"Denial reason code: (?:CO|PR|OA)-\d+ \((.*)\)\. Disposition:", chunk.text
+        )
         if not match:
             return ""
         return match.group(1).strip().replace(". ", "; ").rstrip(".")
@@ -162,7 +167,12 @@ class ExtractiveGenerator:
 
     @staticmethod
     def _parse_primary_dx(chunk: RetrievedChunk) -> tuple[str, str]:
-        match = re.search(r"Supporting diagnosis: ICD-10 ([A-Z0-9.]+) \(([^)]+)\)", chunk.text)
+        match = re.search(
+            r"Supporting diagnosis: ICD-10 ([A-Z0-9.]+) \((.*)\)\. All procedure codes:",
+            chunk.text,
+        )
+        if not match:
+            match = re.search(r"Supporting diagnosis: ICD-10 ([A-Z0-9.]+) \(([^)]+)\)", chunk.text)
         if match:
             return match.group(1), match.group(2)
         return "", ""
@@ -173,6 +183,14 @@ class ExtractiveGenerator:
         if match:
             return match.group(1), match.group(2)
         return str(chunk.metadata.get("code") or ""), str(chunk.metadata.get("code_display") or "")
+
+    @staticmethod
+    def _count_sentence(
+        count: int, singular: str, plural: str, patient: str, indices: list[int]
+    ) -> str:
+        verb = "is" if count == 1 else "are"
+        label = singular if count == 1 else plural
+        return _sentence(f"There {verb} {count} {label} for patient {patient}", indices)
 
     @staticmethod
     def _patient_id(question: str, filters: dict[str, Any] | None) -> str:
@@ -315,18 +333,17 @@ class ExtractiveGenerator:
                     return None
                 denied = [(i, c) for i, c in claim_facts if c.metadata.get("denied")]
                 count = len({c.metadata.get("claim_id") or c.chunk_id for _, c in denied})
-                label = "denied claim" if count == 1 else "denied claims"
                 cites = [i for i, _ in (denied or claim_facts)]
-                return [_sentence(f"There are {count} {label} for patient {patient}", cites)]
+                return [
+                    self._count_sentence(count, "denied claim", "denied claims", patient, cites)
+                ]
             if "claim" in q:
                 if not claim_facts:
                     return None
                 count = len({c.metadata.get("claim_id") or c.chunk_id for _, c in claim_facts})
-                label = "claim" if count == 1 else "claims"
                 return [
-                    _sentence(
-                        f"There are {count} {label} for patient {patient}",
-                        [i for i, _ in claim_facts],
+                    self._count_sentence(
+                        count, "claim", "claims", patient, [i for i, _ in claim_facts]
                     )
                 ]
             if "encounter" in q:
@@ -335,10 +352,12 @@ class ExtractiveGenerator:
                 count = len(
                     {c.metadata.get("encounter_id") or c.chunk_id for _, c in encounter_facts}
                 )
-                label = "encounter" if count == 1 else "encounters"
                 return [
-                    _sentence(
-                        f"There are {count} {label} for patient {patient}",
+                    self._count_sentence(
+                        count,
+                        "encounter",
+                        "encounters",
+                        patient,
                         [i for i, _ in encounter_facts],
                     )
                 ]
@@ -346,10 +365,12 @@ class ExtractiveGenerator:
                 if not procedure_facts:
                     return None
                 count = len(procedure_facts)
-                label = "procedure" if count == 1 else "procedures"
                 return [
-                    _sentence(
-                        f"There are {count} {label} for patient {patient}",
+                    self._count_sentence(
+                        count,
+                        "procedure",
+                        "procedures",
+                        patient,
                         [i for i, _ in procedure_facts],
                     )
                 ]
@@ -357,10 +378,12 @@ class ExtractiveGenerator:
                 if not condition_facts:
                     return None
                 count = len(condition_facts)
-                label = "diagnosis" if count == 1 else "diagnoses"
                 return [
-                    _sentence(
-                        f"There are {count} {label} for patient {patient}",
+                    self._count_sentence(
+                        count,
+                        "diagnosis",
+                        "diagnoses",
+                        patient,
                         [i for i, _ in condition_facts],
                     )
                 ]
@@ -368,10 +391,12 @@ class ExtractiveGenerator:
                 if not medication_facts:
                     return None
                 count = len(medication_facts)
-                label = "medication order" if count == 1 else "medication orders"
                 return [
-                    _sentence(
-                        f"There are {count} {label} for patient {patient}",
+                    self._count_sentence(
+                        count,
+                        "medication order",
+                        "medication orders",
+                        patient,
                         [i for i, _ in medication_facts],
                     )
                 ]
@@ -388,9 +413,11 @@ class ExtractiveGenerator:
                 key, label = "billed", "billed"
             total = sum(self._parse_claim_amount(c, key) for _, c in claim_facts)
             count = len(claim_facts)
+            claim_label = "claim" if count == 1 else "claims"
             return [
                 _sentence(
-                    f"The total {label} amount for patient {patient} is ${total:,.2f} across {count} claims",
+                    f"The total {label} amount for patient {patient} is ${total:,.2f} "
+                    f"across {count} {claim_label}",
                     [i for i, _ in claim_facts],
                 )
             ]
@@ -522,7 +549,8 @@ class ExtractiveGenerator:
             display, value, date = self._parse_observation(chunk)
             if not value:
                 return None
-            return [_sentence(f"{display} was {value} on {date}", [index])]
+            code = str(chunk.metadata.get("code") or "")
+            return [_sentence(f"{display} was {value} on {date} (SNOMED {code})", [index])]
 
         if ("summarize" in q or "summary" in q or "history" in q) and contexts:
             clauses: list[str] = []
