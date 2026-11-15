@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Secrets
+.env
+.env.local
+
+# Generated data / artifacts (tiny committed sample lives in data/sample)
+data/corpus/
+data/benchmark/
+data/sft/
+data/raw/
+artifacts/
+models/
+*.faiss
+*.sqlite3
+*.pt
+*.bin
+*.safetensors
+*.jsonl.tmp
+
+# OS
+.DS_Store
