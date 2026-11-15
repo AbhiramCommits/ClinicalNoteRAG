@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -74,10 +75,12 @@ class FaissStore:
             self.index_path.unlink(missing_ok=True)
             self.sqlite_path.unlink(missing_ok=True)
         self._index = self._load_index()
-        self._conn = sqlite3.connect(self.sqlite_path)
+        self._conn = sqlite3.connect(self.sqlite_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        self._lock = threading.RLock()
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
+            self._conn.commit()
 
     def _load_index(self) -> faiss.Index:
         if self.index_path.exists():
@@ -117,30 +120,32 @@ class FaissStore:
     def upsert(self, records: list[Record]) -> int:
         """Insert new content-hash ids; duplicates are skipped idempotently."""
         inserted = 0
-        for record in records:
-            cursor = self._conn.execute(
-                """
-                INSERT OR IGNORE INTO chunks (
-                    id, chunk_id, text, patient_id, encounter_id, resource_type,
-                    code_system, code, doc_type, service_date, claim_id, denied,
-                    denial_code, title, section, chunk_index, metadata, vector
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                self._row_from_record(record),
-            )
-            if cursor.rowcount == 0:
-                continue
-            rowid = int(cursor.lastrowid)
-            vector = validate_vector(record.vector, self.dim).reshape(1, -1)
-            self._index.add_with_ids(vector, np.asarray([rowid], dtype=np.int64))
-            inserted += 1
-        self._conn.commit()
-        self.flush()
+        with self._lock:
+            for record in records:
+                cursor = self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO chunks (
+                        id, chunk_id, text, patient_id, encounter_id, resource_type,
+                        code_system, code, doc_type, service_date, claim_id, denied,
+                        denial_code, title, section, chunk_index, metadata, vector
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    self._row_from_record(record),
+                )
+                if cursor.rowcount == 0:
+                    continue
+                rowid = int(cursor.lastrowid)
+                vector = validate_vector(record.vector, self.dim).reshape(1, -1)
+                self._index.add_with_ids(vector, np.asarray([rowid], dtype=np.int64))
+                inserted += 1
+            self._conn.commit()
+            self.flush()
         return inserted
 
     def flush(self) -> None:
         """Persist the FAISS index to disk."""
-        faiss.write_index(self._index, str(self.index_path))
+        with self._lock:
+            faiss.write_index(self._index, str(self.index_path))
 
     def _hit_from_row(self, row: sqlite3.Row, score: float) -> SearchHit:
         return SearchHit(
@@ -164,10 +169,11 @@ class FaissStore:
 
             clause, params = sql_filter_clause(active)
             clause = clause.replace("%s", "?")
-            rows = self._conn.execute(
-                f"SELECT rowid, id, chunk_id, text, metadata, vector FROM chunks{clause}",  # noqa: S608
-                params,
-            ).fetchall()
+            with self._lock:
+                rows = self._conn.execute(
+                    f"SELECT rowid, id, chunk_id, text, metadata, vector FROM chunks{clause}",  # noqa: S608
+                    params,
+                ).fetchall()
             if not rows:
                 return []
             matrix = np.vstack([np.frombuffer(row["vector"], dtype=np.float32) for row in rows])
@@ -180,10 +186,11 @@ class FaissStore:
         if not ordered_ids:
             return []
         placeholders = ",".join("?" for _ in ordered_ids)
-        rows = self._conn.execute(
-            f"SELECT rowid, id, chunk_id, text, metadata FROM chunks WHERE rowid IN ({placeholders})",  # noqa: S608
-            ordered_ids,
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT rowid, id, chunk_id, text, metadata FROM chunks WHERE rowid IN ({placeholders})",  # noqa: S608
+                ordered_ids,
+            ).fetchall()
         by_rowid = {int(row["rowid"]): row for row in rows}
         hits: list[SearchHit] = []
         for score, rowid in zip(distances[0], ids[0], strict=False):
@@ -196,14 +203,16 @@ class FaissStore:
 
     def count(self) -> int:
         """Number of rows in the sidecar."""
-        row = self._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()
         return int(row["n"])
 
     def all_records(self, include_vectors: bool = False) -> list[Record]:
         """Return every chunk; vectors are optional to keep BM25 memory low."""
-        rows = self._conn.execute(
-            "SELECT id, chunk_id, text, metadata, vector FROM chunks ORDER BY rowid"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, chunk_id, text, metadata, vector FROM chunks ORDER BY rowid"
+            ).fetchall()
         records: list[Record] = []
         for row in rows:
             vector = None
@@ -225,7 +234,8 @@ class FaissStore:
         try:
             self.flush()
         finally:
-            self._conn.close()
+            with self._lock:
+                self._conn.close()
 
     def __enter__(self) -> FaissStore:
         return self

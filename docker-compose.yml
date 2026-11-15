@@ -17,5 +17,51 @@ services:
       timeout: 5s
       retries: 12
 
+  ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["pipeline"]
+    command:
+      - clinicalnoterag
+      - ingest
+      - --corpus
+      - /data/corpus
+      - --store
+      - pgvector
+      - --out
+      - /app/artifacts/ingest_report.json
+    environment:
+      VECTOR_BACKEND: pgvector
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-clinicalnoterag}
+      ARTIFACT_DIR: /app/artifacts
+      LLM_BACKEND: extractive
+    volumes:
+      - ./data:/data:ro
+      - clinicalnoterag_artifacts:/app/artifacts
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clinicalnoterag-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      VECTOR_BACKEND: pgvector
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-clinicalnoterag}
+      ARTIFACT_DIR: /app/artifacts
+      LLM_BACKEND: extractive
+      SEED: "42"
+    volumes:
+      - clinicalnoterag_artifacts:/app/artifacts
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   clinicalnoterag_pgdata:
+  clinicalnoterag_artifacts:

@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.git
+data/corpus
+data/benchmark
+data/sft
+artifacts
+models
+.env
+.DS_Store
